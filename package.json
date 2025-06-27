@@ -1,0 +1,13 @@
+{
+  "name": "frameio-render-app",
+  "version": "1.0.0",
+  "description": "Forwards Frame.io webhooks to Slack.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.2"
+  }
+}
