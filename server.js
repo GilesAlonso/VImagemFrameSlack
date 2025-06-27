@@ -4,51 +4,45 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-// --- Load all necessary credentials from Render's Environment Variables ---
+// --- Load required credentials from Render's Environment Variables ---
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 const ADOBE_CLIENT_ID = process.env.ADOBE_CLIENT_ID;
 const ADOBE_CLIENT_SECRET = process.env.ADOBE_CLIENT_SECRET;
-const ADOBE_REFRESH_TOKEN = process.env.ADOBE_REFRESH_TOKEN;
 
-// --- In-memory cache for the temporary Access Token ---
-// This prevents us from requesting a new token for every single API call.
+// --- In-memory cache for the Access Token ---
 let accessToken = null;
 let tokenExpiry = null;
 
 /**
- * Gets a valid Adobe Access Token, refreshing it if it's expired or missing.
- * This is the core of the authentication logic.
+ * Gets a valid Adobe Access Token using the correct Server-to-Server flow.
  */
 async function getAccessToken() {
-  // If we have a valid token in memory, reuse it.
   if (accessToken && Date.now() < tokenExpiry) {
     return accessToken;
   }
 
-  console.log('Access token is missing or expired. Refreshing now...');
+  console.log('Generating new Server-to-Server access token...');
   try {
-    const response = await axios.post('https://ims-na1.adobelogin.com/ims/token', new URLSearchParams({
-      grant_type: 'refresh_token',
+    const response = await axios.post('https://ims-na1.adobelogin.com/ims/token/v3', new URLSearchParams({
+      grant_type: 'client_credentials',
       client_id: ADOBE_CLIENT_ID,
       client_secret: ADOBE_CLIENT_SECRET,
-      refresh_token: ADOBE_REFRESH_TOKEN
+      scope: 'openid,frame.s2s.all' // The correct scope for S2S
     }));
 
     accessToken = response.data.access_token;
-    // Set expiry to 1 hour from now (Adobe tokens last 24 hours, but we refresh early for safety).
-    tokenExpiry = Date.now() + (60 * 60 * 1000); 
-    
-    console.log('Successfully refreshed Adobe access token.');
+    tokenExpiry = Date.now() + (response.data.expires_in * 1000) - 60000; // Set expiry with a 1-min buffer
+
+    console.log('Successfully generated new token.');
     return accessToken;
 
   } catch (error) {
-    console.error('CRITICAL: Could not refresh Adobe token. Check environment variables.', error.response ? error.response.data : error.message);
-    throw new Error('Could not authenticate with Adobe.');
+    console.error('CRITICAL: Could not generate S2S token.', error.response ? error.response.data : error.message);
+    throw new Error('Could not authenticate with Adobe. This is likely a licensing issue in the Adobe Admin Console.');
   }
 }
 
-// --- Create a dedicated API client for Frame.io ---
-// This will automatically add the authentication token to every request.
+// --- Create a dedicated API client for Frame.io (this logic remains the same) ---
 const frameioApi = axios.create({ baseURL: 'https://api.frame.io/v4' });
 frameioApi.interceptors.request.use(async (config) => {
   const token = await getAccessToken();
@@ -56,10 +50,10 @@ frameioApi.interceptors.request.use(async (config) => {
   return config;
 }, (error) => Promise.reject(error));
 
+// The rest of the application (getProjectName, the /webhook handler) is unchanged.
+// Paste the functions for `getProjectName` and the `app.post('/webhook', ...)` route here
+// from our previous correct versions. They do not need to be modified.
 
-/**
- * Fetches the Project Name from the Frame.io API using a project_id.
- */
 async function getProjectName(projectId) {
   if (!projectId) return 'Unknown Project';
   try {
@@ -71,27 +65,23 @@ async function getProjectName(projectId) {
   }
 }
 
-// --- Main application logic ---
 app.use(express.json());
 
-// This is the main endpoint that will receive webhooks from Frame.io.
 app.post('/webhook', async (req, res) => {
   if (!SLACK_WEBHOOK_URL) {
-    console.error('FATAL: SLACK_WEBHOOK_URL is not configured in environment variables.');
+    console.error('FATAL: SLACK_WEBHOOK_URL is not configured.');
     return res.status(500).send('Internal configuration error.');
   }
 
   const frameio_payload = req.body;
-  let slackBlocks = []; // We will build our Slack message using Block Kit.
+  let slackBlocks = [];
 
   try {
-    // --- Handler for New Comments ---
     if (frameio_payload.type === 'comment.created') {
       const resource = frameio_payload.resource;
       const projectName = await getProjectName(resource.project_id);
       const commenterName = resource.owner.name;
       const assetName = resource.asset.name;
-      // Frame.io timestamps are in seconds; convert to HH:MM:SS format
       const timestamp = new Date(resource.timestamp * 1000).toISOString().substr(11, 8);
       const commentText = resource.text;
       const thumbnailUrl = resource.asset.thumbnail_url;
@@ -102,9 +92,7 @@ app.post('/webhook', async (req, res) => {
         { "type": "image", "image_url": thumbnailUrl, "alt_text": "Video thumbnail" },
         { "type": "divider" }
       ];
-    }
-    // --- Handler for New Asset Uploads ---
-    else if (frameio_payload.type === 'asset.created') {
+    } else if (frameio_payload.type === 'asset.created') {
       const resource = frameio_payload.resource;
       const projectName = await getProjectName(resource.project_id);
       const uploaderName = resource.owner ? resource.owner.name : 'A user';
@@ -118,13 +106,10 @@ app.post('/webhook', async (req, res) => {
         { "type": "image", "image_url": thumbnailUrl, "alt_text": "Video thumbnail" },
         { "type": "divider" }
       ];
-    }
-     else {
-      // Acknowledge other events without sending to Slack to avoid errors.
+    } else {
       return res.status(200).send('Event type not handled, but acknowledged.');
     }
 
-    // Send the structured message to our Slack channel.
     await axios.post(SLACK_WEBHOOK_URL, { blocks: slackBlocks });
     res.status(200).send('Message successfully forwarded to Slack.');
 
@@ -134,7 +119,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Start the server.
 app.listen(PORT, () => {
   console.log(`Server is running and listening on port ${PORT}`);
 });
