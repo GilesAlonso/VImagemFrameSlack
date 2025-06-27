@@ -1,5 +1,5 @@
 {
-  "name": "frameio-render-app",
+  "name": "vimagemframeslack",
   "version": "1.0.0",
   "description": "Forwards Frame.io webhooks to Slack.",
   "main": "server.js",
