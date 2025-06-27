@@ -1,2 +1,2 @@
 # VImagemFrameSlack
-Pastes comments from Frame.io into Slack Channel
+Forwards Frame.io webhooks to Slack.
